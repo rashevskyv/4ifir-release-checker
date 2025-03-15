@@ -140,6 +140,13 @@ def create_github_release(version: str, description: str, file_paths):
     # Спочатку створюємо реліз
     release_url = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases"
     
+    # Створюємо тег для релізу
+    tag = f"v{version}"
+    
+    # Додаємо плашку з лічильником завантажень до опису
+    download_badge = f"![GitHub release (latest by date)](https://img.shields.io/github/downloads/{GITHUB_OWNER}/{GITHUB_REPO}/{tag}/total)\n\n"
+    enhanced_description = download_badge + description
+    
     headers = {
         "Accept": "application/vnd.github+json",
         "Authorization": f"Bearer {GITHUB_TOKEN}",
@@ -147,10 +154,10 @@ def create_github_release(version: str, description: str, file_paths):
     }
     
     data = {
-        "tag_name": f"v{version}",
+        "tag_name": tag,
         "target_commitish": "main",
         "name": "4IFIR",  # Фіксована назва релізу
-        "body": description,
+        "body": enhanced_description,
         "draft": False,
         "prerelease": False
     }
