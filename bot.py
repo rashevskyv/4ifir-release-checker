@@ -46,8 +46,31 @@ app = Client(
     api_hash=API_HASH
 )
 
-def create_github_release(version: str, description: str, file_path):
-    """Створити реліз на GitHub і додати до нього файл."""
+# Словник для відстеження оброблених медіа-груп
+processed_media_groups = {}
+
+def add_file_to_release(upload_url, file_path, file_name, headers):
+    """Додати файл до існуючого релізу."""
+    try:
+        with open(file_path, 'rb') as file:
+            upload_headers = headers.copy()
+            upload_headers["Content-Type"] = "application/zip"
+            
+            upload_response = requests.post(
+                f"{upload_url}?name={file_name}",
+                headers=upload_headers,
+                data=file
+            )
+            upload_response.raise_for_status()
+        
+        logger.info(f"Файл {file_name} успішно додано до релізу")
+        return True
+    except Exception as e:
+        logger.error(f"Помилка додавання файлу {file_name} до релізу: {e}")
+        return False
+
+def create_github_release(version: str, description: str, file_paths):
+    """Створити реліз на GitHub і додати до нього файли."""
     # Спочатку створюємо реліз
     release_url = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases"
     
@@ -75,40 +98,49 @@ def create_github_release(version: str, description: str, file_path):
         # Отримуємо URL для завантаження ассетів
         upload_url = release_data["upload_url"].split("{")[0]
         
-        # Завантаження файлу як ассет
-        with open(file_path, 'rb') as file:
-            upload_headers = headers.copy()
-            upload_headers["Content-Type"] = "application/zip"
-            
-            upload_response = requests.post(
-                f"{upload_url}?name={RELEASE_FILE_PATTERN}",
-                headers=upload_headers,
-                data=file
-            )
-            upload_response.raise_for_status()
+        # Створюємо список для відстеження успішності завантаження всіх файлів
+        all_uploads_successful = True
         
-        logger.info(f"GitHub реліз v{version} успішно створено з файлом {RELEASE_FILE_PATTERN}")
-        return True
+        # Завантаження всіх файлів як ассети
+        for file_info in file_paths:
+            file_path = file_info["path"]
+            file_name = file_info["name"]
+            
+            success = add_file_to_release(upload_url, file_path, file_name, headers)
+            if not success:
+                all_uploads_successful = False
+        
+        if all_uploads_successful:
+            logger.info(f"GitHub реліз v{version} успішно створено з усіма файлами")
+        else:
+            logger.warning(f"GitHub реліз v{version} створено, але деякі файли не були завантажені")
+            
+        return all_uploads_successful, release_data["html_url"]
     except Exception as e:
         logger.error(f"Помилка створення GitHub релізу: {e}")
-        return False
+        return False, None
 
 @app.on_message(filters.chat(TELEGRAM_GROUP_ID) & filters.document)
 async def handle_document(client, message: Message):
     """Обробити повідомлення з документом."""
     try:
-        # Перевіряємо, чи це файл 4IFIR.zip
-        if message.document.file_name != RELEASE_FILE_PATTERN:
-            return
-        
         # Перевірка, чи повідомлення в потрібному топіку
         if hasattr(message, 'reply_to_message_id') and message.reply_to_message_id == TELEGRAM_TOPIC_ID:
             # Відправляємо лог у спеціальний чат для логів
             await client.send_message(
                 TELEGRAM_LOG_CHAT_ID,
-                f"📥 Отримано файл {RELEASE_FILE_PATTERN} в топіку {TELEGRAM_TOPIC_ID}. Починаю обробку..."
+                f"📥 Отримано повідомлення в топіку {TELEGRAM_TOPIC_ID}. Починаю обробку..."
             )
         else:
+            return
+        
+        # Якщо повідомлення належить до медіа-групи, передаємо його до іншого обробника
+        if message.media_group_id:
+            await handle_media_group_message(client, message)
+            return
+            
+        # Перевіряємо наявність файлів
+        if not message.document:
             return
         
         # Отримати текст повідомлення як реліз-ноут
@@ -117,39 +149,169 @@ async def handle_document(client, message: Message):
         # Отримати версію з часової мітки у форматі YYYY.MM.DD-HH.MM
         version = datetime.now().strftime("%Y.%m.%d-%H.%M")
         
-        # Створити тимчасовий файл
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.zip') as temp_file:
-            temp_path = temp_file.name
+        # Список файлів для додавання до релізу
+        files_to_add = []
+        
+        # Перевіряємо документ
+        file_name = message.document.file_name
+        # Перевіряємо, чи це архів (.zip)
+        if file_name.endswith('.zip'):
+            # Створити тимчасовий файл
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.zip') as temp_file:
+                temp_path = temp_file.name
             
-        # Завантажити файл
-        await message.download(temp_path)
-        await client.send_message(
-            TELEGRAM_LOG_CHAT_ID,
-            f"📦 Файл успішно завантажено у тимчасовий файл"
-        )
-        
-        # Створити реліз на GitHub з файлом
-        success = create_github_release(version, release_notes, temp_path)
-        
-        # Видалити тимчасовий файл
-        os.unlink(temp_path)
-        
-        if success:
-            release_url = f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/releases/tag/v{version}"
-            # Відправляємо повідомлення в чат логів
+            # Завантажити файл
+            await message.download(temp_path)
+            
+            files_to_add.append({"path": temp_path, "name": file_name})
+            
             await client.send_message(
                 TELEGRAM_LOG_CHAT_ID,
-                f"✅ Реліз v{version} успішно створено на GitHub!\n" + 
-                f"📎 {release_url}"
+                f"📦 Файл {file_name} успішно завантажено у тимчасовий файл"
             )
+        
+        # Якщо знайдено файли для додавання до релізу
+        if files_to_add:
+            # Створити реліз на GitHub з файлами
+            success, release_url = create_github_release(version, release_notes, files_to_add)
+            
+            # Видалити всі тимчасові файли
+            for file_info in files_to_add:
+                os.unlink(file_info["path"])
+            
+            if success:
+                # Відправляємо повідомлення в чат логів
+                file_names_str = ", ".join([f"`{file_info['name']}`" for file_info in files_to_add])
+                await client.send_message(
+                    TELEGRAM_LOG_CHAT_ID,
+                    f"✅ Реліз v{version} успішно створено на GitHub!\n" + 
+                    f"📂 Додано файли: {file_names_str}\n" +
+                    f"📎 {release_url}"
+                )
+            else:
+                await client.send_message(
+                    TELEGRAM_LOG_CHAT_ID,
+                    "❌ Не вдалося створити реліз на GitHub. Перевірте логи."
+                )
         else:
             await client.send_message(
                 TELEGRAM_LOG_CHAT_ID,
-                "❌ Не вдалося створити реліз на GitHub. Перевірте логи."
+                "ℹ️ Не знайдено архівів для додавання до релізу."
+            )
+    except Exception as e:
+        error_message = f"❌ Сталася помилка при обробці повідомлення: {str(e)}"
+        logger.error(error_message)
+        await client.send_message(TELEGRAM_LOG_CHAT_ID, error_message)
+
+async def handle_media_group_message(client, message: Message):
+    """Обробити повідомлення з медіа-групи."""
+    try:
+        media_group_id = message.media_group_id
+        
+        # Перевіряємо, чи вже оброблена ця медіа-група нещодавно
+        current_time = datetime.now()
+        if media_group_id in processed_media_groups:
+            last_processed_time = processed_media_groups[media_group_id]
+            # Якщо обробляли менше 1 хвилини тому, пропускаємо
+            if (current_time - last_processed_time).total_seconds() < 60:
+                logger.info(f"Медіа-група {media_group_id} вже оброблена нещодавно. Пропускаємо.")
+                return
+        
+        # Помічаємо цю медіа-групу як оброблену
+        processed_media_groups[media_group_id] = current_time
+        
+        # Перевіряємо, чи є ZIP-файл у цьому повідомленні
+        if not message.document or not message.document.file_name.endswith('.zip'):
+            logger.info(f"Повідомлення в медіа-групі {media_group_id} не містить ZIP-архів. Пропускаємо.")
+            return
+        
+        # Повідомляємо про початок обробки медіа-групи
+        await client.send_message(
+            TELEGRAM_LOG_CHAT_ID,
+            f"📥 Обробка медіа-групи {media_group_id}. Зачекайте, щоб отримати всі файли..."
+        )
+        
+        # Чекаємо 2 секунди, щоб переконатися, що всі повідомлення в медіа-групі вже отримані
+        await asyncio.sleep(2)
+        
+        # Готуємо дані для релізу
+        release_notes = message.caption if message.caption else "Новий реліз"
+        version = datetime.now().strftime("%Y.%m.%d-%H.%M")
+        files_to_add = []
+        
+        # Додаємо поточний файл
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.zip') as temp_file:
+            temp_path = temp_file.name
+        
+        # Завантажуємо файл
+        await message.download(temp_path)
+        
+        files_to_add.append({"path": temp_path, "name": message.document.file_name})
+        
+        await client.send_message(
+            TELEGRAM_LOG_CHAT_ID,
+            f"📦 Файл {message.document.file_name} з медіа-групи завантажено у тимчасовий файл"
+        )
+        
+        # Отримуємо історію повідомлень з цієї медіа-групи (за останні кілька хвилин)
+        from datetime import timedelta
+        five_minutes_ago = int((current_time - timedelta(minutes=5)).timestamp())
+        
+        try:
+            async for msg in client.get_chat_history(TELEGRAM_GROUP_ID, limit=50):
+                # Шукаємо повідомлення з тією ж медіа-групою
+                if (msg.media_group_id == media_group_id and 
+                    msg.id != message.id and  # не дублюємо поточне повідомлення
+                    msg.document and 
+                    msg.document.file_name.endswith('.zip')):
+                    
+                    # Створюємо новий тимчасовий файл для цього документа
+                    with tempfile.NamedTemporaryFile(delete=False, suffix='.zip') as new_temp_file:
+                        new_temp_path = new_temp_file.name
+                    
+                    # Завантажуємо файл
+                    await msg.download(new_temp_path)
+                    
+                    files_to_add.append({"path": new_temp_path, "name": msg.document.file_name})
+                    
+                    await client.send_message(
+                        TELEGRAM_LOG_CHAT_ID,
+                        f"📦 Додатковий файл {msg.document.file_name} з медіа-групи завантажено у тимчасовий файл"
+                    )
+        except Exception as e:
+            logger.error(f"Помилка при отриманні додаткових повідомлень медіа-групи: {e}")
+        
+        # Якщо знайдено файли для додавання до релізу
+        if files_to_add:
+            # Створити реліз на GitHub з файлами
+            success, release_url = create_github_release(version, release_notes, files_to_add)
+            
+            # Видалити всі тимчасові файли
+            for file_info in files_to_add:
+                os.unlink(file_info["path"])
+            
+            if success:
+                # Відправляємо повідомлення в чат логів
+                file_names_str = ", ".join([f"`{file_info['name']}`" for file_info in files_to_add])
+                await client.send_message(
+                    TELEGRAM_LOG_CHAT_ID,
+                    f"✅ Реліз v{version} успішно створено на GitHub!\n" + 
+                    f"📂 Додано файли з медіа-групи: {file_names_str}\n" +
+                    f"📎 {release_url}"
+                )
+            else:
+                await client.send_message(
+                    TELEGRAM_LOG_CHAT_ID,
+                    "❌ Не вдалося створити реліз на GitHub. Перевірте логи."
+                )
+        else:
+            await client.send_message(
+                TELEGRAM_LOG_CHAT_ID,
+                "ℹ️ В медіа-групі не знайдено архівів для релізу."
             )
             
     except Exception as e:
-        error_message = f"❌ Сталася помилка при обробці повідомлення: {str(e)}"
+        error_message = f"❌ Сталася помилка при обробці медіа-групи: {str(e)}"
         logger.error(error_message)
         await client.send_message(TELEGRAM_LOG_CHAT_ID, error_message)
 
