@@ -5,6 +5,7 @@ import os
 import tempfile
 import asyncio
 import requests
+import subprocess
 
 from pyrogram import Client, filters, idle
 from pyrogram.types import Message
@@ -67,6 +68,20 @@ def add_file_to_release(upload_url, file_path, file_name, headers):
         return True
     except Exception as e:
         logger.error(f"Помилка додавання файлу {file_name} до релізу: {e}")
+        return False
+
+def run_checker_script():
+    """Запустити скрипт перевірки після успішного створення релізу."""
+    try:
+        # Запускаємо bash скрипт
+        subprocess.run(['bash', os.path.expanduser('~/4ifir-checker/run_checker.sh')], check=True)
+        logger.info("Скрипт перевірки успішно запущено")
+        return True
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Помилка при запуску скрипта перевірки: {e}")
+        return False
+    except Exception as e:
+        logger.error(f"Неочікувана помилка при запуску скрипта перевірки: {e}")
         return False
 
 def create_github_release(version: str, description: str, file_paths):
@@ -180,13 +195,24 @@ async def handle_document(client, message: Message):
                 os.unlink(file_info["path"])
             
             if success:
+                # Запускаємо скрипт перевірки
+                checker_result = run_checker_script()
+                
                 # Відправляємо повідомлення в чат логів
                 file_names_str = ", ".join([f"`{file_info['name']}`" for file_info in files_to_add])
+                success_message = f"✅ Реліз v{version} успішно створено на GitHub!\n" + \
+                                  f"📂 Додано файли: {file_names_str}\n" + \
+                                  f"📎 {release_url}"
+                
+                # Додаємо інформацію про запуск скрипта перевірки
+                if checker_result:
+                    success_message += "\n🔍 Запущено скрипт перевірки"
+                else:
+                    success_message += "\n⚠️ Не вдалося запустити скрипт перевірки"
+                
                 await client.send_message(
                     TELEGRAM_LOG_CHAT_ID,
-                    f"✅ Реліз v{version} успішно створено на GitHub!\n" + 
-                    f"📂 Додано файли: {file_names_str}\n" +
-                    f"📎 {release_url}"
+                    success_message
                 )
             else:
                 await client.send_message(
@@ -291,13 +317,24 @@ async def handle_media_group_message(client, message: Message):
                 os.unlink(file_info["path"])
             
             if success:
+                # Запускаємо скрипт перевірки
+                checker_result = run_checker_script()
+                
                 # Відправляємо повідомлення в чат логів
                 file_names_str = ", ".join([f"`{file_info['name']}`" for file_info in files_to_add])
+                success_message = f"✅ Реліз v{version} успішно створено на GitHub!\n" + \
+                                  f"📂 Додано файли з медіа-групи: {file_names_str}\n" + \
+                                  f"📎 {release_url}"
+                
+                # Додаємо інформацію про запуск скрипта перевірки
+                if checker_result:
+                    success_message += "\n🔍 Запущено скрипт перевірки"
+                else:
+                    success_message += "\n⚠️ Не вдалося запустити скрипт перевірки"
+                
                 await client.send_message(
                     TELEGRAM_LOG_CHAT_ID,
-                    f"✅ Реліз v{version} успішно створено на GitHub!\n" + 
-                    f"📂 Додано файли з медіа-групи: {file_names_str}\n" +
-                    f"📎 {release_url}"
+                    success_message
                 )
             else:
                 await client.send_message(
