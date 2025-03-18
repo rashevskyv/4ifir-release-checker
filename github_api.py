@@ -114,17 +114,23 @@ def download_required_files_from_previous_releases():
                 if asset_name in remaining_files:
                     logger.info(f"Знайдено необхідний файл {asset_name} в релізі {release_tag}")
                     
-                    download_url = asset.get("url")
+                    download_url = asset.get("browser_download_url")
                     if download_url:
-                        temp_path = download_asset_from_github(download_url, asset_name)
+                        response = requests.get(download_url, stream=True)
+                        response.raise_for_status()
                         
-                        if temp_path:
-                            downloaded_files[asset_name] = {
-                                "path": temp_path,
-                                "name": asset_name
-                            }
-                            # Видаляємо файл з переліку тих, що ще потрібно знайти
-                            remaining_files.remove(asset_name)
+                        # Створюємо тимчасовий файл
+                        with tempfile.NamedTemporaryFile(delete=False, suffix='.zip') as temp_file:
+                            temp_path = temp_file.name
+                            for chunk in response.iter_content(chunk_size=8192):
+                                temp_file.write(chunk)
+                        
+                        downloaded_files[asset_name] = {
+                            "path": temp_path,
+                            "name": asset_name
+                        }
+                        # Видаляємо файл з переліку тих, що ще потрібно знайти
+                        remaining_files.remove(asset_name)
         
         # Перевіряємо, чи залишилися файли, які не вдалося знайти
         if remaining_files:

@@ -1,87 +1,248 @@
-import subprocess
 import os
 import tempfile
+import subprocess
 from datetime import datetime
-from config import logger, TELEGRAM_LOG_CHAT_ID
+import logging
+import asyncio
+import sys
+from telethon import TelegramClient
+
+from config import (
+    logger, API_ID, API_HASH, TELEGRAM_LOG_CHAT_ID, 
+    ENABLE_FILE_DOWNLOAD
+)
+
+# Глобальний клієнт Telethon
+telethon_client = None
+
+async def get_telethon_client():
+    """Отримати клієнт Telethon."""
+    global telethon_client
+    
+    if telethon_client is None:
+        # Створюємо клієнт Telethon
+        telethon_client = TelegramClient(
+            "4ifir_release_bot_telethon",
+            API_ID,
+            API_HASH
+        )
+        await telethon_client.start()
+        logger.info("Telethon клієнт запущено")
+        
+    return telethon_client
 
 def run_checker_script():
-    """Запустити скрипт перевірки після успішного створення релізу."""
+    """Запустити скрипт перевірки."""
     try:
-        # Запускаємо bash скрипт
-        subprocess.run(['bash', os.path.expanduser('~/4ifir-checker/run_checker.sh')], check=True)
-        logger.info("Скрипт перевірки успішно запущено")
-        return True
-    except subprocess.CalledProcessError as e:
+        # Шлях до скрипта. Припускаємо, що він знаходиться в тій же папці, що й цей скрипт
+        script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'checker.py')
+        
+        # Перевіряємо, чи існує скрипт
+        if not os.path.exists(script_path):
+            logger.error(f"Скрипт перевірки не знайдено за шляхом: {script_path}")
+            return False
+        
+        # Запускаємо скрипт
+        result = subprocess.run(['python', script_path], capture_output=True, text=True)
+        
+        if result.returncode == 0:
+            logger.info(f"Скрипт перевірки успішно запущено. Вивід: {result.stdout}")
+            return True
+        else:
+            logger.error(f"Скрипт перевірки завершився з помилкою. Код: {result.returncode}, Помилка: {result.stderr}")
+            return False
+    except Exception as e:
         logger.error(f"Помилка при запуску скрипта перевірки: {e}")
         return False
-    except Exception as e:
-        logger.error(f"Неочікувана помилка при запуску скрипта перевірки: {e}")
-        return False
 
-async def download_and_save_file(client, message, file_name=None):
-    """Завантажити файл з повідомлення і зберегти у тимчасовий файл з консольним індикатором прогресу."""
+async def download_file(bot, message_obj, file_name):
+    """Завантажити файл через Bot API або Telethon."""
     try:
+        # Перевіряємо, чи увімкнене завантаження файлів
+        if not ENABLE_FILE_DOWNLOAD:
+            logger.info(f"Завантаження файлів вимкнено в налаштуваннях. Пропускаємо завантаження {file_name}.")
+            # Відправляємо повідомлення користувачу
+            await bot.send_message(
+                chat_id=TELEGRAM_LOG_CHAT_ID,
+                text=f"ℹ️ Завантаження файлів вимкнено в налаштуваннях. Пропускаємо завантаження {file_name}."
+            )
+            return {
+                "path": "dummy_path",
+                "name": file_name
+            }
+        
+        # Спочатку пробуємо використовувати Bot API
+        try:
+            # Створюємо тимчасовий файл
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.zip') as temp_file:
+                temp_path = temp_file.name
+            
+            # Відправляємо повідомлення про початок завантаження
+            progress_msg = await bot.send_message(
+                chat_id=TELEGRAM_LOG_CHAT_ID,
+                text=f"⏳ Починаємо завантаження файлу {file_name} через Bot API..."
+            )
+            
+            # Завантажуємо файл через Bot API
+            file_id = message_obj.document.file_id
+            file_info = await bot.get_file(file_id)
+            downloaded_file = await bot.download_file(file_info.file_path, temp_path)
+            
+            # Повідомляємо про завершення
+            await bot.edit_message_text(
+                chat_id=TELEGRAM_LOG_CHAT_ID,
+                message_id=progress_msg.message_id,
+                text=f"✅ Файл {file_name} успішно завантажено через Bot API у тимчасовий файл"
+            )
+            
+            logger.info(f"Файл {file_name} успішно завантажено через Bot API у тимчасовий файл {temp_path}")
+            
+            return {
+                "path": temp_path,
+                "name": file_name
+            }
+        except Exception as e:
+            logger.error(f"Помилка завантаження файлу {file_name} через Bot API: {e}")
+            logger.info(f"Спроба завантажити файл {file_name} за допомогою Telethon")
+            
+            # Якщо є повідомлення про прогрес, оновлюємо його
+            if 'progress_msg' in locals():
+                await bot.edit_message_text(
+                    chat_id=TELEGRAM_LOG_CHAT_ID,
+                    message_id=progress_msg.message_id,
+                    text=f"⚠️ Не вдалося завантажити через Bot API: {str(e)}\n⏳ Спробуємо через Telethon..."
+                )
+            
+            # Завантажуємо через Telethon
+            return await download_file_telethon(bot, message_obj, file_name)
+    except Exception as e:
+        logger.error(f"Помилка завантаження файлу {file_name}: {e}")
+        # Видаляємо тимчасовий файл у разі помилки
+        if 'temp_path' in locals() and os.path.exists(temp_path):
+            os.unlink(temp_path)
+        return None
+
+def print_progress_bar(current, total, file_name):
+    """Вивести прогрес-бар у консоль."""
+    # Визначаємо, скільки відсотків вже завантажено
+    percent = int(current * 100 / total)
+    
+    # Будуємо прогрес-бар
+    bar_length = 20
+    filled_length = int(bar_length * current / total)
+    bar = '█' * filled_length + '░' * (bar_length - filled_length)
+    
+    # Обчислюємо розмір в МБ
+    current_mb = current / 1024 / 1024
+    total_mb = total / 1024 / 1024
+    
+    # Готуємо рядок прогресу
+    progress_str = f"\r⏳ Завантаження {file_name}: [{bar}] {percent}% | {current_mb:.2f} МБ / {total_mb:.2f} МБ"
+    
+    # Виводимо прогрес-бар в консоль (з перезаписом того ж рядка)
+    sys.stdout.write(progress_str)
+    sys.stdout.flush()
+    
+    # Якщо завантаження завершено, переходимо на новий рядок
+    if current == total:
+        sys.stdout.write("\n")
+
+async def progress_callback(current, total, file_name):
+    """Callback-функція для відстеження прогресу завантаження."""
+    # Вивести прогрес-бар у консоль
+    print_progress_bar(current, total, file_name)
+
+async def download_file_telethon(bot, message_obj, file_name):
+    """Завантажити файл за допомогою Telethon."""
+    try:
+        # Отримуємо клієнт Telethon
+        client = await get_telethon_client()
+        
+        # Створюємо тимчасовий файл
         with tempfile.NamedTemporaryFile(delete=False, suffix='.zip') as temp_file:
             temp_path = temp_file.name
         
-        actual_file_name = file_name or message.file.name
-        file_size = message.file.size
+        # Отримуємо дані для завантаження
+        chat_id = message_obj.chat.id
+        message_id = message_obj.message_id
         
-        # Функція для оновлення статусу завантаження в консолі
-        async def progress_callback(current, total):
-            percent = current * 100 / total
-            # Створюємо графічний індикатор прогресу
-            bar_length = 30
-            filled_length = int(bar_length * current / total)
-            bar = '█' * filled_length + '░' * (bar_length - filled_length)
-            
-            # Розраховуємо швидкість (Kb/s)
-            if not hasattr(progress_callback, 'start_time'):
-                progress_callback.start_time = datetime.now()
-                progress_callback.last_current = 0
-                progress_callback.last_time = progress_callback.start_time
-            
-            now = datetime.now()
-            time_diff = (now - progress_callback.last_time).total_seconds()
-            
-            if time_diff > 0.5:  # Оновлюємо кожні 0.5 секунди
-                bytes_diff = current - progress_callback.last_current
-                speed = bytes_diff / time_diff / 1024  # KB/s
-                
-                elapsed = (now - progress_callback.start_time).total_seconds()
-                if current > 0:
-                    estimated_total = elapsed * total / current
-                    remaining = estimated_total - elapsed
-                else:
-                    remaining = 0
-                
-                # Форматуємо розмір у зручному вигляді
-                if total < 1024 * 1024:
-                    size_text = f"{total / 1024:.1f} KB"
-                    current_text = f"{current / 1024:.1f} KB"
-                else:
-                    size_text = f"{total / 1024 / 1024:.1f} MB"
-                    current_text = f"{current / 1024 / 1024:.1f} MB"
-                
-                # Очищаємо поточний рядок та виводимо прогрес
-                print(f"\r⬇️ {actual_file_name} [{bar}] {percent:.1f}% ({current_text}/{size_text}) | {speed:.1f} KB/s | ETA: {int(remaining)}s   ", end='', flush=True)
-                
-                # Оновлюємо останні значення
-                progress_callback.last_current = current
-                progress_callback.last_time = now
+        # Виводимо основну інформацію для логування
+        logger.info(f"Телетон завантаження: chat_id={chat_id}, message_id={message_id}, file_name={file_name}")
         
-        # Завантажити файл за допомогою Telethon з індикатором прогресу
-        await client.download_media(message, temp_path, progress_callback=progress_callback)
+        # Відправляємо повідомлення про початок завантаження в телеграм
+        progress_msg = await bot.send_message(
+            chat_id=TELEGRAM_LOG_CHAT_ID,
+            text=f"⏳ Підготовка до завантаження файлу {file_name} через Telethon..."
+        )
         
-        # Фінальне повідомлення про завершення
-        print(f"\r✅ Файл {actual_file_name} ({file_size/1024/1024:.1f} MB) успішно завантажено               ")
+        # Отримуємо повідомлення через Telethon
+        telethon_message = await client.get_messages(chat_id, ids=message_id)
         
-        logger.info(f"Файл {actual_file_name} успішно завантажено у тимчасовий файл")
+        if not telethon_message or not telethon_message.document:
+            logger.error(f"Не вдалося знайти документ у повідомленні через Telethon")
+            await bot.edit_message_text(
+                chat_id=TELEGRAM_LOG_CHAT_ID,
+                message_id=progress_msg.message_id,
+                text=f"❌ Помилка: Не вдалося знайти документ у повідомленні через Telethon"
+            )
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+            return None
+        
+        # Повідомляємо про початок завантаження
+        await bot.edit_message_text(
+            chat_id=TELEGRAM_LOG_CHAT_ID,
+            message_id=progress_msg.message_id,
+            text=f"⏳ Починаємо завантаження файлу {file_name} через Telethon... Прогрес відображається в консолі."
+        )
+        
+        # Функція для відстеження прогресу завантаження (тільки консоль)
+        progress_callback_func = lambda current, total: asyncio.create_task(
+            progress_callback(current, total, file_name)
+        )
+        
+        # Завантажуємо файл з відстеженням прогресу
+        downloaded_path = await client.download_media(
+            telethon_message,
+            temp_path,
+            progress_callback=progress_callback_func
+        )
+        
+        if not downloaded_path or not os.path.exists(downloaded_path):
+            logger.error(f"Помилка під час завантаження файлу через Telethon")
+            await bot.edit_message_text(
+                chat_id=TELEGRAM_LOG_CHAT_ID,
+                message_id=progress_msg.message_id,
+                text=f"❌ Помилка: Не вдалося завантажити файл через Telethon"
+            )
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+            return None
+        
+        # Повідомляємо про успішне завантаження
+        await bot.edit_message_text(
+            chat_id=TELEGRAM_LOG_CHAT_ID,
+            message_id=progress_msg.message_id,
+            text=f"✅ Файл {file_name} успішно завантажено через Telethon"
+        )
+        
+        logger.info(f"Файл {file_name} успішно завантажено через Telethon у тимчасовий файл {downloaded_path}")
+        
         return {
-            "path": temp_path, 
-            "name": actual_file_name
+            "path": downloaded_path,
+            "name": file_name
         }
     except Exception as e:
-        print(f"\r❌ Помилка при завантаженні файлу {file_name or 'невідомий'}: {e}               ")
-        logger.error(f"Помилка при завантаженні файлу {file_name or 'невідомий'}: {e}")
+        logger.error(f"Помилка завантаження файлу {file_name} через Telethon: {e}")
+        
+        if 'progress_msg' in locals():
+            await bot.edit_message_text(
+                chat_id=TELEGRAM_LOG_CHAT_ID,
+                message_id=progress_msg.message_id,
+                text=f"❌ Помилка завантаження файлу {file_name} через Telethon: {str(e)}"
+            )
+        
+        # Видаляємо тимчасовий файл у разі помилки
+        if 'temp_path' in locals() and os.path.exists(temp_path):
+            os.unlink(temp_path)
         return None
