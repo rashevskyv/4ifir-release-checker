@@ -1,3 +1,4 @@
-telethon==1.28.5
-tgcrypto==1.2.5
+python-telegram-bot==20.6
 requests==2.31.0
+telethon==1.32.1
+aiohttp==3.9.1
