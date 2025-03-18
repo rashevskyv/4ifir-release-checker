@@ -31,5 +31,9 @@ GITHUB_OWNER = CONFIG["github"]["owner"]
 GITHUB_REPO = CONFIG["github"]["repo"]
 RELEASE_FILE_PATTERN = CONFIG["release"]["file_pattern"]
 
+# Опції для увімкнення/вимкнення функціоналу
+ENABLE_GITHUB_RELEASE = CONFIG.get("features", {}).get("enable_github_release", True)
+ENABLE_CHECKER_SCRIPT = CONFIG.get("features", {}).get("enable_checker_script", True)
+
 # Важливі файли, які потрібно включити в кожний реліз
 REQUIRED_FILES = ["AIO.zip", "4IFIX.zip"]
