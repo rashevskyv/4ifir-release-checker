@@ -9,7 +9,7 @@ from telethon import TelegramClient
 
 from config import (
     logger, API_ID, API_HASH, TELEGRAM_LOG_CHAT_ID, 
-    ENABLE_FILE_DOWNLOAD
+    ENABLE_FILE_DOWNLOAD, CHECKER_SCRIPT_PATH
 )
 
 # Глобальний клієнт Telethon
@@ -34,16 +34,16 @@ async def get_telethon_client():
 def run_checker_script():
     """Запустити скрипт перевірки."""
     try:
-        # Шлях до скрипта. Припускаємо, що він знаходиться в тій же папці, що й цей скрипт
-        script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'checker.py')
+        # Отримуємо шлях до скрипта з конфігурації
+        script_path = CHECKER_SCRIPT_PATH
         
         # Перевіряємо, чи існує скрипт
         if not os.path.exists(script_path):
             logger.error(f"Скрипт перевірки не знайдено за шляхом: {script_path}")
             return False
         
-        # Запускаємо скрипт
-        result = subprocess.run(['python', script_path], capture_output=True, text=True)
+        # Запускаємо Bash-скрипт
+        result = subprocess.run(['bash', script_path], capture_output=True, text=True)
         
         if result.returncode == 0:
             logger.info(f"Скрипт перевірки успішно запущено. Вивід: {result.stdout}")
