@@ -31,8 +31,13 @@ async def get_telethon_client():
         
     return telethon_client
 
-def run_checker_script():
-    """Запустити скрипт перевірки."""
+def run_checker_script(message_id=None):
+    """Запустити скрипт перевірки.
+    
+    Args:
+        message_id (int, optional): ID повідомлення в Telegram для відповіді. 
+                                   Якщо вказано, буде передано скрипту.
+    """
     try:
         # Отримуємо шлях до скрипта з конфігурації
         script_path = CHECKER_SCRIPT_PATH
@@ -42,8 +47,15 @@ def run_checker_script():
             logger.error(f"Скрипт перевірки не знайдено за шляхом: {script_path}")
             return False
         
-        # Запускаємо Bash-скрипт
-        result = subprocess.run(['bash', script_path], capture_output=True, text=True)
+        # Визначаємо, з якими параметрами запускати скрипт
+        if message_id is not None:
+            # Якщо ID повідомлення вказано, передаємо його скрипту як аргумент
+            logger.info(f"Запуск скрипта перевірки з ID повідомлення: {message_id}")
+            result = subprocess.run(['bash', script_path, str(message_id)], capture_output=True, text=True)
+        else:
+            # Інакше запускаємо без додаткових аргументів
+            logger.info("Запуск скрипта перевірки без додаткових аргументів")
+            result = subprocess.run(['bash', script_path], capture_output=True, text=True)
         
         if result.returncode == 0:
             logger.info(f"Скрипт перевірки успішно запущено. Вивід: {result.stdout}")
@@ -54,7 +66,7 @@ def run_checker_script():
     except Exception as e:
         logger.error(f"Помилка при запуску скрипта перевірки: {e}")
         return False
-
+        
 async def download_file(bot, message_obj, file_name):
     """Завантажити файл через Bot API або Telethon."""
     try:

@@ -35,10 +35,14 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.info(f"Повідомлення не в потрібному топіку. Очікуваний ID: {TELEGRAM_TOPIC_ID}, Отриманий ID: {message.message_thread_id}")
             return
             
+        # Зберігаємо ID повідомлення для передачі скрипту
+        message_id = message.message_id
+        logger.info(f"Обробка повідомлення з ID: {message_id}")
+        
         # Відправляємо лог у спеціальний чат для логів
         await context.bot.send_message(
             chat_id=TELEGRAM_LOG_CHAT_ID,
-            text=f"📥 Отримано повідомлення в потрібному топіку. Починаю обробку..."
+            text=f"📥 Отримано повідомлення в потрібному топіку. ID повідомлення: {message_id}. Починаю обробку..."
         )
         
         # Якщо повідомлення належить до медіа-групи, передаємо його до іншого обробника
@@ -156,11 +160,12 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Запускаємо скрипт перевірки, якщо дозволено і обробка файлів була успішною
             checker_result = False
             if success and ENABLE_CHECKER_SCRIPT:
-                checker_result = run_checker_script()
+                # Передаємо ID повідомлення у скрипт
+                checker_result = run_checker_script(message_id)
                 
                 # Додаємо інформацію про запуск скрипта перевірки
                 if checker_result:
-                    success_message += "\n🔍 Запущено скрипт перевірки"
+                    success_message += f"\n🔍 Запущено скрипт перевірки з ID повідомлення: {message_id}"
                 else:
                     success_message += "\n⚠️ Не вдалося запустити скрипт перевірки"
             elif success and not ENABLE_CHECKER_SCRIPT:
@@ -186,6 +191,10 @@ async def handle_media_group_message(update: Update, context: ContextTypes.DEFAU
     try:
         message = update.effective_message
         media_group_id = message.media_group_id
+        
+        # Зберігаємо ID повідомлення для передачі скрипту
+        message_id = message.message_id
+        logger.info(f"Обробка повідомлення з медіа-групи, ID: {message_id}")
         
         # Перевірка, чи повідомлення в потрібному топіку/групі
         if message.chat.id != int(TELEGRAM_GROUP_ID):
@@ -216,7 +225,7 @@ async def handle_media_group_message(update: Update, context: ContextTypes.DEFAU
         # Повідомляємо про початок обробки медіа-групи
         await context.bot.send_message(
             chat_id=TELEGRAM_LOG_CHAT_ID,
-            text=f"📥 Обробка медіа-групи {media_group_id}. Зачекайте, щоб отримати всі файли..."
+            text=f"📥 Обробка медіа-групи {media_group_id}. ID повідомлення: {message_id}. Зачекайте, щоб отримати всі файли..."
         )
         
         # Чекаємо 2 секунди, щоб переконатися, що всі повідомлення в медіа-групі вже отримані
@@ -334,11 +343,12 @@ async def handle_media_group_message(update: Update, context: ContextTypes.DEFAU
             # Запускаємо скрипт перевірки, якщо дозволено і обробка файлів була успішною
             checker_result = False
             if success and ENABLE_CHECKER_SCRIPT:
-                checker_result = run_checker_script()
+                # Передаємо ID повідомлення у скрипт
+                checker_result = run_checker_script(message_id)
                 
                 # Додаємо інформацію про запуск скрипта перевірки
                 if checker_result:
-                    success_message += "\n🔍 Запущено скрипт перевірки"
+                    success_message += f"\n🔍 Запущено скрипт перевірки з ID повідомлення: {message_id}"
                 else:
                     success_message += "\n⚠️ Не вдалося запустити скрипт перевірки"
             elif success and not ENABLE_CHECKER_SCRIPT:
