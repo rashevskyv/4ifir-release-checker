@@ -45,4 +45,4 @@ ENABLE_FILE_DOWNLOAD = CONFIG.get("features", {}).get("enable_file_download", Tr
 CHECKER_SCRIPT_PATH = CONFIG.get("paths", {}).get("checker_script", "/home/xhr/4ifir-checker/run_checker.sh")
 
 # Важливі файли, які потрібно включити в кожний реліз
-REQUIRED_FILES = ["AIO.zip", "4IFIX.zip"]
+REQUIRED_FILES = ["AIO.zip", "4IFIX.zip", "4IFIB.zip", "4IFIR.zip"]

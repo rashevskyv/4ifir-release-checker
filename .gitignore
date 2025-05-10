@@ -7,3 +7,5 @@ __pycache__
 4ifir_release_bot.session-journal
 config.json
 test_config.json
+*.session
+log.txt
