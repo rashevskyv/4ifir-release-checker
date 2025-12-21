@@ -17,32 +17,56 @@ from github_api import (
 )
 from utils import run_checker_script_async, download_file
 
+# --- НОВА ФУНКЦІЯ: ВИТЯГУВАННЯ ОПИСУ ---
+
+def extract_release_notes(message):
+    """
+    Визначає текст для опису релізу.
+    Пріоритет:
+    1. Текст повідомлення, на яке відповіли (Reply).
+    2. Підпис (Caption) до самого файлу.
+    3. None (якщо нічого немає).
+    """
+    # 1. Перевіряємо, чи це Reply (відповідь на інше повідомлення)
+    if message.reply_to_message:
+        reply = message.reply_to_message
+        # В оригінальному повідомленні може бути text (якщо це просто текст) 
+        # або caption (якщо це медіа)
+        text = reply.text or reply.caption
+        if text:
+            return text
+            
+    # 2. Якщо не Reply, беремо підпис поточного повідомлення
+    if message.caption:
+        return message.caption
+        
+    return None
+
 # --- ЛОГІКА ФОРМУВАННЯ РЕЛІЗУ ---
 
 async def process_release_logic(context: ContextTypes.DEFAULT_TYPE, telegram_files, release_notes, message_id):
     """
-    telegram_files: список файлів, які щойно завантажені з Telegram.
+    Формує реліз, докачує файли та відправляє на GitHub.
     """
     try:
         version = datetime.now().strftime("%Y.%m.%d-%H.%M")
         
-        # Списки для звіту
+        # Списки файлів
         final_files_list = list(telegram_files)
         updated_names = [f["name"] for f in telegram_files]
         kept_names = []
         
-        # Словник для швидкого пошуку
+        # Словник для перевірки
         files_map = {f["name"]: f for f in final_files_list}
         
-        # 1. Перевіряємо, яких обов'язкових файлів не вистачає
+        # 1. Перевірка обов'язкових файлів
         missing_required_files = []
         for required_file in REQUIRED_FILES:
             if required_file not in files_map:
                 missing_required_files.append(required_file)
         
-        # 2. Докачуємо відсутнє з історії (GitHub)
+        # 2. Докачування з історії
         if missing_required_files:
-            # await context.bot.send_message(chat_id=TELEGRAM_LOG_CHAT_ID, text=f"🔍 Докачую з історії: {', '.join(missing_required_files)}...")
             previous_files = download_required_files_from_previous_releases()
             
             for req_file in missing_required_files:
@@ -53,14 +77,14 @@ async def process_release_logic(context: ContextTypes.DEFAULT_TYPE, telegram_fil
                 else:
                     await context.bot.send_message(
                         chat_id=TELEGRAM_LOG_CHAT_ID,
-                        text=f"❌ Файл {req_file} не знайдено ні в новому пості, ні в історії."
+                        text=f"❌ Файл {req_file} втрачено! Немає ні в новому пості, ні в історії."
                     )
 
         if final_files_list:
             success = False
             release_url = None
             
-            # --- ГЕНЕРАЦІЯ ОПИСУ ---
+            # --- ГЕНЕРАЦІЯ ОПИСУ (Markdown) ---
             description_parts = []
             
             if updated_names:
@@ -69,17 +93,17 @@ async def process_release_logic(context: ContextTypes.DEFAULT_TYPE, telegram_fil
                     description_parts.append(f"- `{name}`")
             
             if kept_names:
-                description_parts.append("\n♻️ **Без змін (з попередніх версій):**")
+                description_parts.append("\n♻️ **Без змін (з історії):**")
                 for name in kept_names:
                     description_parts.append(f"- `{name}`")
             
-            # Додаємо нотатки користувача, якщо вони є
-            if release_notes and len(release_notes) > 0:
-                description_parts.append(f"\n📝 **Нотатки:**\n{release_notes}")
+            # Додаємо текст (з реплаю або кепшена)
+            if release_notes and len(release_notes.strip()) > 0:
+                description_parts.append(f"\n📝 **Список змін:**\n{release_notes}")
             
             full_description = "\n".join(description_parts)
             
-            # --- СТВОРЕННЯ РЕЛІЗУ НА GITHUB ---
+            # --- СТВОРЕННЯ РЕЛІЗУ ---
             if ENABLE_GITHUB_RELEASE:
                 success, release_url = create_github_release(version, full_description, final_files_list)
                 
@@ -96,13 +120,13 @@ async def process_release_logic(context: ContextTypes.DEFAULT_TYPE, telegram_fil
                 success_message = f"✅ Файли оброблено (GitHub вимкнено).\n\n{full_description}"
                 success = True
             
-            # Видаляємо тимчасові файли
+            # Очистка
             for file_info in final_files_list:
                 if os.path.exists(file_info["path"]) and "dummy" not in file_info["path"]:
                     try: os.unlink(file_info["path"])
                     except: pass
 
-            # --- ЗАПУСК CHECKER ---
+            # Запуск скрипта перевірки
             if success and ENABLE_CHECKER_SCRIPT:
                 await context.bot.send_message(
                     chat_id=TELEGRAM_LOG_CHAT_ID, 
@@ -130,20 +154,21 @@ async def process_release_logic(context: ContextTypes.DEFAULT_TYPE, telegram_fil
 
 async def process_album(context: ContextTypes.DEFAULT_TYPE, group_id: str):
     """
-    Ця функція запускається, коли альбом повністю зібрано (таймер 4 сек вийшов).
-    Тут ми вже знаємо кількість файлів і качаємо їх.
+    Запускається таймером, коли альбом зібрано.
     """
     if 'media_groups_buffer' not in context.bot_data: return
     if group_id not in context.bot_data['media_groups_buffer']: return
     
     group_data = context.bot_data['media_groups_buffer'][group_id]
-    
-    # Витягуємо список повідомлень
     messages = group_data['messages']
-    caption = group_data.get('caption', "")
-    main_msg_id = group_data['main_msg_id']
     
-    # Видаляємо з буфера, щоб не обробити двічі
+    # Визначаємо головний меседж (перший)
+    first_msg = messages[0]
+    # Витягуємо опис (шукаємо reply або caption)
+    release_notes = extract_release_notes(first_msg)
+    main_msg_id = first_msg.message_id
+    
+    # Чистимо буфер
     del context.bot_data['media_groups_buffer'][group_id]
     
     await context.bot.send_message(
@@ -153,7 +178,6 @@ async def process_album(context: ContextTypes.DEFAULT_TYPE, group_id: str):
     
     downloaded_files = []
     
-    # ЗАВАНТАЖУЄМО ВСІ ФАЙЛИ ПО ЧЕРЗІ
     for msg in messages:
         file_name = msg.document.file_name
         try:
@@ -161,19 +185,18 @@ async def process_album(context: ContextTypes.DEFAULT_TYPE, group_id: str):
             if file_info:
                 downloaded_files.append(file_info)
         except Exception as e:
-            logger.error(f"Failed to download {file_name}: {e}")
-            await context.bot.send_message(chat_id=TELEGRAM_LOG_CHAT_ID, text=f"⚠️ Не вдалося завантажити {file_name}")
+            logger.error(f"Download failed {file_name}: {e}")
+            await context.bot.send_message(chat_id=TELEGRAM_LOG_CHAT_ID, text=f"⚠️ Помилка: {file_name}")
 
-    # Коли все завантажено - робимо реліз
     if downloaded_files:
-        await process_release_logic(context, downloaded_files, caption, main_msg_id)
+        await process_release_logic(context, downloaded_files, release_notes, main_msg_id)
     else:
-        await context.bot.send_message(chat_id=TELEGRAM_LOG_CHAT_ID, text="❌ Жоден файл з альбому не завантажився.")
+        await context.bot.send_message(chat_id=TELEGRAM_LOG_CHAT_ID, text="❌ Помилка: файли не завантажились.")
 
 
 async def handle_media_group_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Збирає повідомлення альбому в список.
+    Тільки буферизує повідомлення. Стара логіка caption видалена.
     """
     message = update.effective_message
     group_id = message.media_group_id
@@ -186,66 +209,53 @@ async def handle_media_group_message(update: Update, context: ContextTypes.DEFAU
     
     buffer = context.bot_data['media_groups_buffer']
 
-    # Якщо це перший файл з групи
     if group_id not in buffer:
         buffer[group_id] = {
             'messages': [],
-            'caption': None,
-            'main_msg_id': message.message_id,
             'timer_task': None
         }
-        logger.info(f"🆕 Нова група {group_id}, починаю збір...")
+        logger.info(f"🆕 Початок збору групи {group_id}")
     
-    group_data = buffer[group_id]
-    
-    # Додаємо повідомлення в список (НЕ качаємо ще)
-    group_data['messages'].append(message)
-    
-    # Зберігаємо текст (шукаємо перший непорожній)
-    if message.caption and not group_data['caption']:
-        group_data['caption'] = message.caption
+    # Просто додаємо повідомлення в список
+    buffer[group_id]['messages'].append(message)
 
-    # Скидаємо таймер збору
-    if group_data['timer_task']:
-        group_data['timer_task'].cancel()
+    # Скидаємо/Заводимо таймер
+    if buffer[group_id]['timer_task']:
+        buffer[group_id]['timer_task'].cancel()
     
-    # Ставимо новий таймер на 4 секунди. 
-    # Якщо за 4 сек нових повідомлень не буде - запускаємо process_album
-    group_data['timer_task'] = asyncio.create_task(
+    buffer[group_id]['timer_task'] = asyncio.create_task(
         _wait_and_process(context, group_id)
     )
 
 async def _wait_and_process(context, group_id):
-    """Допоміжна функція очікування."""
     try:
-        await asyncio.sleep(4) # Чекаємо поки Telegram дошле всі частини альбому
+        await asyncio.sleep(4) # Чекаємо завершення альбому
         await process_album(context, group_id)
     except asyncio.CancelledError:
-        pass # Таймер скасовано, бо прийшов новий файл - це нормально
+        pass 
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Одиночний файл або група."""
+    """Одиночний файл."""
     message = update.effective_message
     
     if message.chat.id != int(TELEGRAM_GROUP_ID): return
     if message.message_thread_id and message.message_thread_id != int(TELEGRAM_TOPIC_ID): return
     
-    # Якщо група - віддаємо в колектор
     if message.media_group_id:
         await handle_media_group_message(update, context)
         return
 
-    # Якщо одиночний
     file_name = message.document.file_name
     if not file_name.endswith('.zip'): return
 
     await context.bot.send_message(chat_id=TELEGRAM_LOG_CHAT_ID, text=f"📥 Одиночний файл: {file_name}")
     
-    # Качаємо відразу
     files_to_add = []
     file_info = await download_file(context.bot, message, file_name)
     if file_info:
         files_to_add.append(file_info)
     
-    caption = message.caption if message.caption else "Новий реліз"
-    await process_release_logic(context, files_to_add, caption, message.message_id)
+    # Використовуємо нову функцію
+    release_notes = extract_release_notes(message)
+    
+    await process_release_logic(context, files_to_add, release_notes, message.message_id)
