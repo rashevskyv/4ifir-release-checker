@@ -75,6 +75,10 @@ async def process_release_logic(context: ContextTypes.DEFAULT_TYPE, telegram_fil
             success = False
             release_url = None
             
+            # --- СОРТУВАННЯ ФАЙЛІВ ---
+            # 4IFIR.zip завжди перший (пріоритет 0), всі інші - за ними (пріоритет 1)
+            final_files_list.sort(key=lambda f: 0 if f['name'] == '4IFIR.zip' else 1)
+            
             # Генерація опису
             description_parts = []
             
@@ -234,8 +238,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not file_name or not file_name.lower().endswith('.zip'): return
 
     # 3. Визначення ID групи
-    # Якщо це медіа-група — використовуємо її ID.
-    # Якщо одиночний файл — генеруємо унікальний ID на основі message_id.
     if message.media_group_id:
         group_id = message.media_group_id
     else:
