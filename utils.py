@@ -14,7 +14,7 @@ from config import (
 telethon_client = None
 
 async def get_telethon_client():
-    """Отримати клієнт Telethon."""
+    """Get or create a connected Telethon client."""
     global telethon_client
     
     if telethon_client is None:
@@ -24,7 +24,12 @@ async def get_telethon_client():
             API_HASH
         )
         await telethon_client.start()
-        logger.info("Telethon клієнт запущено")
+        logger.info("Telethon client started and initialized")
+    
+    # Ensure the client is still connected
+    if not telethon_client.is_connected():
+        logger.info("Telethon client was disconnected. Reconnecting...")
+        await telethon_client.connect()
         
     return telethon_client
 
