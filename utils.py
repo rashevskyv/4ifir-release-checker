@@ -7,7 +7,8 @@ from telethon import TelegramClient
 
 from config import (
     logger, API_ID, API_HASH, TELEGRAM_LOG_CHAT_ID, 
-    ENABLE_FILE_DOWNLOAD, CHECKER_SCRIPT_PATH
+    ENABLE_FILE_DOWNLOAD, CHECKER_SCRIPT_PATH,
+    TELEGRAM_TOKEN, TELEGRAM_GROUP_ID, TELEGRAM_TOPIC_ID
 )
 
 # Глобальний клієнт Telethon
@@ -39,7 +40,7 @@ async def run_checker_script_async(message_id=None):
     Не блокує основний потік бота.
     """
     try:
-        script_path = CHECKER_SCRIPT_PATH
+        script_path = os.path.expanduser(CHECKER_SCRIPT_PATH)
         
         if not os.path.exists(script_path):
             logger.error(f"Скрипт перевірки не знайдено за шляхом: {script_path}")
@@ -52,11 +53,20 @@ async def run_checker_script_async(message_id=None):
         else:
             logger.info("Асинхронний запуск скрипта перевірки без аргументів")
 
+        # Підготовка змінних середовища для дочірнього процесу
+        env = os.environ.copy()
+        if TELEGRAM_TOKEN: env["TELEGRAM_BOT_TOKEN"] = str(TELEGRAM_TOKEN)
+        if API_ID: env["TELEGRAM_API_ID"] = str(API_ID)
+        if API_HASH: env["TELEGRAM_API_HASH"] = str(API_HASH)
+        if TELEGRAM_GROUP_ID: env["YOUR_CHAT_ID"] = str(TELEGRAM_GROUP_ID)
+        if TELEGRAM_TOPIC_ID: env["TOPIC_ID"] = str(TELEGRAM_TOPIC_ID)
+
         # Використовуємо asyncio для запуску процесу
         process = await asyncio.create_subprocess_exec(
             *args,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
+            stderr=asyncio.subprocess.PIPE,
+            env=env
         )
         
         # Чекаємо завершення (але це await не блокує весь event loop для інших задач)
