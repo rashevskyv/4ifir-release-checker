@@ -198,3 +198,60 @@ def create_github_release(version: str, description: str, file_paths):
     except Exception as e:
         logger.error(f"Помилка створення GitHub релізу: {e}")
         return False, None
+
+def update_github_release_assets(release_data, file_paths, description=None):
+    """Update or replace files in an existing GitHub release."""
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "Authorization": f"Bearer {GITHUB_TOKEN}",
+        "X-GitHub-Api-Version": "2022-11-28"
+    }
+    
+    # 1. Update the release description if a new one is provided
+    if description:
+        try:
+            tag = release_data.get("tag_name")
+            download_badge = f"![GitHub release (latest by date)](https://img.shields.io/github/downloads/{GITHUB_OWNER}/{GITHUB_REPO}/{tag}/total)\n\n"
+            enhanced_description = download_badge + description
+            
+            update_url = release_data["url"]
+            data = {
+                "body": enhanced_description
+            }
+            patch_response = requests.patch(update_url, headers=headers, json=data)
+            patch_response.raise_for_status()
+            logger.info("Existing GitHub release description updated successfully.")
+            release_data = patch_response.json()
+        except Exception as e:
+            logger.error(f"Error updating release description on GitHub: {e}")
+
+    # 2. Find assets that already exist and delete them before upload
+    existing_assets = {asset["name"]: asset["id"] for asset in release_data.get("assets", [])}
+    upload_url = release_data["upload_url"].split("{")[0]
+    
+    all_uploads_successful = True
+    
+    for file_info in file_paths:
+        file_path = file_info["path"]
+        file_name = file_info["name"]
+        
+        # If asset already exists, delete it first
+        if file_name in existing_assets:
+            asset_id = existing_assets[file_name]
+            delete_url = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases/assets/{asset_id}"
+            try:
+                logger.info(f"Deleting old asset {file_name} (ID: {asset_id}) from release...")
+                del_response = requests.delete(delete_url, headers=headers)
+                del_response.raise_for_status()
+                logger.info(f"Old asset {file_name} deleted successfully.")
+            except Exception as e:
+                logger.error(f"Error deleting old asset {file_name} from GitHub release: {e}")
+                all_uploads_successful = False
+                continue
+        
+        # Upload the new asset
+        success = add_file_to_release(upload_url, file_path, file_name, headers)
+        if not success:
+            all_uploads_successful = False
+            
+    return all_uploads_successful, release_data["html_url"]

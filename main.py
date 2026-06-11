@@ -9,24 +9,47 @@ def main():
     # Створюємо додаток
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     
-    # Додаємо обробник для документів
-    # Додаємо фільтр на повідомлення з потрібним message_thread_id
+    # Add handlers for documents
+    # Add filter for messages with required message_thread_id
     application.add_handler(
         MessageHandler(
             filters.Document.ALL & 
             filters.Document.MimeType("application/zip") & 
             ~filters.COMMAND &
-            filters.ChatType.SUPERGROUP,  # Перевіряємо, що це суперогрупа
+            filters.ChatType.SUPERGROUP,  # Check that it is a supergroup
             handle_document
         )
     )
     
-    # Можна додати додаткові обробники для ZIP-файлів з іншими MIME-типами
+    # Also handle edited messages with ZIP documents
+    application.add_handler(
+        MessageHandler(
+            filters.UpdateType.EDITED_MESSAGE &
+            filters.Document.ALL & 
+            filters.Document.MimeType("application/zip") & 
+            ~filters.COMMAND &
+            filters.ChatType.SUPERGROUP,
+            handle_document
+        )
+    )
+    
+    # Add additional handler for ZIP files with other MIME types
     application.add_handler(
         MessageHandler(
             filters.Document.FileExtension("zip") & 
             ~filters.COMMAND &
-            filters.ChatType.SUPERGROUP,  # Перевіряємо, що це суперогрупа
+            filters.ChatType.SUPERGROUP,  # Check that it is a supergroup
+            handle_document
+        )
+    )
+    
+    # Also handle edited messages for ZIP files with other MIME types
+    application.add_handler(
+        MessageHandler(
+            filters.UpdateType.EDITED_MESSAGE &
+            filters.Document.FileExtension("zip") & 
+            ~filters.COMMAND &
+            filters.ChatType.SUPERGROUP,
             handle_document
         )
     )

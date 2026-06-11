@@ -13,11 +13,35 @@ from config import (
     ENABLE_FILE_DOWNLOAD
 )
 from github_api import (
-    create_github_release, download_required_files_from_previous_releases
+    create_github_release, download_required_files_from_previous_releases,
+    get_latest_release, update_github_release_assets
 )
 from utils import run_checker_script_async, download_file
 
 # --- ДОПОМІЖНІ ФУНКЦІЇ ---
+
+import json
+
+LAST_MSG_ID_FILE = "last_message_id.json"
+
+def get_last_processed_message_id():
+    """Load the last processed Telegram message ID from file."""
+    try:
+        if os.path.exists(LAST_MSG_ID_FILE):
+            with open(LAST_MSG_ID_FILE, 'r') as f:
+                data = json.load(f)
+                return data.get("last_message_id")
+    except Exception as e:
+        logger.error(f"Error loading last message ID: {e}")
+    return None
+
+def save_last_processed_message_id(message_id):
+    """Save the last processed Telegram message ID to file."""
+    try:
+        with open(LAST_MSG_ID_FILE, 'w') as f:
+            json.dump({"last_message_id": message_id}, f)
+    except Exception as e:
+        logger.error(f"Error saving last message ID: {e}")
 
 def extract_release_notes(message):
     """
@@ -99,16 +123,39 @@ async def process_release_logic(context: ContextTypes.DEFAULT_TYPE, telegram_fil
             
             # GitHub Release
             if ENABLE_GITHUB_RELEASE:
-                success, release_url = create_github_release(version, full_description, final_files_list)
-                if success:
-                    success_message = (
-                        f"✅ **Реліз v{version} створено!**\n\n"
-                        f"{full_description}\n\n"
-                        f"📎 [GitHub Release]({release_url})"
-                    )
+                last_msg_id = get_last_processed_message_id()
+                is_update = last_msg_id is not None and last_msg_id == message_id
+                
+                latest_release = None
+                if is_update:
+                    latest_release = get_latest_release()
+                
+                if is_update and latest_release:
+                    logger.info(f"Updating assets for existing release (message_id: {message_id})")
+                    success, release_url = update_github_release_assets(latest_release, final_files_list, full_description)
+                    version_tag = latest_release.get("tag_name", "unknown")
+                    if success:
+                        success_message = (
+                            f"🔄 **Реліз {version_tag} оновлено!**\n\n"
+                            f"{full_description}\n\n"
+                            f"📎 [GitHub Release]({release_url})"
+                        )
+                    else:
+                        await context.bot.send_message(chat_id=TELEGRAM_LOG_CHAT_ID, text="❌ Помилка оновлення файлів на GitHub.")
+                        return
                 else:
-                    await context.bot.send_message(chat_id=TELEGRAM_LOG_CHAT_ID, text="❌ Помилка GitHub API.")
-                    return
+                    logger.info(f"Creating new GitHub release (message_id: {message_id})")
+                    success, release_url = create_github_release(version, full_description, final_files_list)
+                    if success:
+                        save_last_processed_message_id(message_id)
+                        success_message = (
+                            f"✅ **Реліз v{version} створено!**\n\n"
+                            f"{full_description}\n\n"
+                            f"📎 [GitHub Release]({release_url})"
+                        )
+                    else:
+                        await context.bot.send_message(chat_id=TELEGRAM_LOG_CHAT_ID, text="❌ Помилка GitHub API.")
+                        return
             else:
                 success_message = f"✅ Файли оброблено.\n\n{full_description}"
                 success = True
